@@ -203,13 +203,13 @@ func updatePricing() {
 		}
 		var raw map[string]interface{}
 		if err := json.Unmarshal([]byte(meta.Endpoints), &raw); err == nil {
-			endpoints := modelSupportEndpointsStr[modelName]
+			// When a model defines custom endpoint mappings, treat them as authoritative
+			// and avoid mixing in capability-based defaults.
+			overrideEndpoints := make([]string, 0, len(raw))
 			for k := range raw {
-				if !common.StringsContains(endpoints, k) {
-					endpoints = append(endpoints, k)
-				}
+				overrideEndpoints = append(overrideEndpoints, k)
 			}
-			modelSupportEndpointsStr[modelName] = endpoints
+			modelSupportEndpointsStr[modelName] = overrideEndpoints
 		}
 	}
 
