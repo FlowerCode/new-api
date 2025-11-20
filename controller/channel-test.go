@@ -646,6 +646,9 @@ func isGeminiTestPath(path string) bool {
 	return strings.Contains(path, "/v1beta/models") ||
 		strings.Contains(path, "/v1beta/publishers") ||
 		strings.Contains(path, "/v1beta/projects") ||
+		strings.Contains(path, "/v1beta1/models") ||
+		strings.Contains(path, "/v1beta1/publishers") ||
+		strings.Contains(path, "/v1beta1/projects") ||
 		strings.Contains(path, "/v1/publishers") ||
 		strings.Contains(path, "/v1/projects")
 }

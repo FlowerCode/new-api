@@ -322,6 +322,9 @@ func isGeminiLikePath(path string) bool {
 		strings.HasPrefix(path, "/v1beta/openai/models") ||
 		strings.HasPrefix(path, "/v1beta/publishers") ||
 		strings.HasPrefix(path, "/v1beta/projects") ||
+		strings.HasPrefix(path, "/v1beta1/models") ||
+		strings.HasPrefix(path, "/v1beta1/publishers") ||
+		strings.HasPrefix(path, "/v1beta1/projects") ||
 		strings.HasPrefix(path, "/v1/models/") ||
 		strings.HasPrefix(path, "/v1/publishers") ||
 		strings.HasPrefix(path, "/v1/projects")

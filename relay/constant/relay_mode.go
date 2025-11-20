@@ -87,7 +87,10 @@ func Path2RelayMode(path string) int {
 		strings.HasPrefix(path, "/v1beta/publishers") ||
 		strings.HasPrefix(path, "/v1/publishers") ||
 		strings.HasPrefix(path, "/v1beta/projects") ||
-		strings.HasPrefix(path, "/v1/projects") {
+		strings.HasPrefix(path, "/v1/projects") ||
+		strings.HasPrefix(path, "/v1beta1/models") ||
+		strings.HasPrefix(path, "/v1beta1/publishers") ||
+		strings.HasPrefix(path, "/v1beta1/projects") {
 		relayMode = RelayModeGemini
 	} else if strings.HasPrefix(path, "/mj") {
 		relayMode = Path2RelayModeMidjourney(path)
