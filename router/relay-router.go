@@ -76,6 +76,13 @@ func SetRelayRouter(router *gin.Engine) {
 		httpRouter := relayV1Router.Group("")
 		httpRouter.Use(middleware.Distribute())
 
+		httpRouter.POST("/publishers/*path", func(c *gin.Context) {
+			controller.Relay(c, types.RelayFormatGemini)
+		})
+		httpRouter.POST("/projects/*path", func(c *gin.Context) {
+			controller.Relay(c, types.RelayFormatGemini)
+		})
+
 		// claude related routes
 		httpRouter.POST("/messages", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatClaude)
@@ -176,6 +183,12 @@ func SetRelayRouter(router *gin.Engine) {
 	{
 		// Gemini API 路径格式: /v1beta/models/{model_name}:{action}
 		relayGeminiRouter.POST("/models/*path", func(c *gin.Context) {
+			controller.Relay(c, types.RelayFormatGemini)
+		})
+		relayGeminiRouter.POST("/publishers/*path", func(c *gin.Context) {
+			controller.Relay(c, types.RelayFormatGemini)
+		})
+		relayGeminiRouter.POST("/projects/*path", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatGemini)
 		})
 	}

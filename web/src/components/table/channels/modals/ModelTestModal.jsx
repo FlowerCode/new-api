@@ -69,7 +69,7 @@ const ModelTestModal = ({
     { value: 'anthropic', label: 'Anthropic (/v1/messages)' },
     {
       value: 'gemini',
-      label: 'Gemini (/v1beta/models/{model}:generateContent)',
+      label: 'Gemini (/v1beta/models/{model}:generateContent or /v1beta/publishers/google/models/{model}:generateContent)',
     },
     { value: 'jina-rerank', label: 'Jina Rerank (/rerank)' },
     {
