@@ -47,4 +47,5 @@ const (
 	ContextKeyUserName    ContextKey = "username"
 
 	ContextKeySystemPromptOverride ContextKey = "system_prompt_override"
+	ContextKeyRequestAPIVersion    ContextKey = "request_api_version"
 )

@@ -91,6 +91,7 @@ type RelayInfo struct {
 	RelayMode              int
 	OriginModelName        string
 	RequestURLPath         string
+	RequestAPIVersion      string
 	PromptTokens           int
 	ShouldIncludeUsage     bool
 	DisablePing            bool // 是否禁止向下游发送自定义 Ping
@@ -398,9 +399,10 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		TokenUnlimited: common.GetContextKeyBool(c, constant.ContextKeyTokenUnlimited),
 
 		isFirstResponse: true,
-		RelayMode:       relayconstant.Path2RelayMode(c.Request.URL.Path),
-		RequestURLPath:  c.Request.URL.String(),
-		IsStream:        isStream,
+		RelayMode:         relayconstant.Path2RelayMode(c.Request.URL.Path),
+		RequestURLPath:    c.Request.URL.String(),
+		RequestAPIVersion: common.GetContextKeyString(c, constant.ContextKeyRequestAPIVersion),
+		IsStream:          isStream,
 
 		StartTime:         startTime,
 		FirstResponseTime: startTime.Add(-time.Second),

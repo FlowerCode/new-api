@@ -35,6 +35,9 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, "Invalid request, "+err.Error())
 			return
 		}
+		if version := detectAPIVersionFromPath(c.Request.URL.Path); version != "" {
+			common.SetContextKey(c, constant.ContextKeyRequestAPIVersion, version)
+		}
 		if ok {
 			id, err := strconv.Atoi(channelId.(string))
 			if err != nil {
@@ -391,4 +394,23 @@ func isGeminiCompatiblePath(path string) bool {
 		strings.HasPrefix(path, "/v1beta1/projects/") ||
 		strings.HasPrefix(path, "/v1/publishers/") ||
 		strings.HasPrefix(path, "/v1/projects/")
+}
+
+func detectAPIVersionFromPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	trimmed := strings.TrimPrefix(path, "/")
+	if trimmed == "" {
+		return ""
+	}
+	parts := strings.Split(trimmed, "/")
+	if len(parts) == 0 {
+		return ""
+	}
+	segment := parts[0]
+	if strings.HasPrefix(segment, "v") {
+		return segment
+	}
+	return ""
 }
