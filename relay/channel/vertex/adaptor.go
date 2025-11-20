@@ -50,8 +50,7 @@ type Adaptor struct {
 
 func resolveVertexAPIVersion(info *relaycommon.RelayInfo, requestMode int) string {
 	version := info.RequestAPIVersion
-	switch version {
-	case "v1", "v1beta", "v1beta1":
+	if version == "v1beta1" {
 		return version
 	}
 	if requestMode == RequestModeLlama {
