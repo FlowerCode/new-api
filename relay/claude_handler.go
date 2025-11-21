@@ -104,6 +104,29 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		if err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
+		if strings.HasPrefix(info.UpstreamModelName, "claude") && info.ApiType == constant.APITypeVertexAi {
+			trimmed := bytes.TrimSpace(body)
+			if len(trimmed) > 0 {
+				payload := map[string]any{}
+				if err := common.Unmarshal(trimmed, &payload); err == nil {
+					updated := false
+					if _, ok := payload["anthropic_version"]; !ok {
+						payload["anthropic_version"] = "vertex-2023-10-16"
+						updated = true
+					}
+					if _, ok := payload["model"]; ok {
+						delete(payload, "model")
+						updated = true
+					}
+					if updated {
+						body, err = common.Marshal(payload)
+						if err != nil {
+							return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+						}
+					}
+				}
+			}
+		}
 		requestBody = bytes.NewBuffer(body)
 	} else {
 		convertedRequest, err := adaptor.ConvertClaudeRequest(c, info, request)
