@@ -31,7 +31,16 @@ type FunctionCallingConfig struct {
 	Mode                 FunctionCallingConfigMode `json:"mode,omitempty"`
 	AllowedFunctionNames []string                  `json:"allowedFunctionNames,omitempty"`
 }
-type FunctionCallingConfigMode string
+
+type FunctionCallingConfigMode int
+
+const (
+	FunctionCallingModeUnspecified FunctionCallingConfigMode = 0
+	FunctionCallingModeAuto        FunctionCallingConfigMode = 1
+	FunctionCallingModeAny         FunctionCallingConfigMode = 2
+	FunctionCallingModeNone        FunctionCallingConfigMode = 3
+	FunctionCallingModeValidated   FunctionCallingConfigMode = 4
+)
 
 type RetrievalConfig struct {
 	LatLng       *LatLng `json:"latLng,omitempty"`
