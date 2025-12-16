@@ -11,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/system_setting"
+	"github.com/hashicorp/go-retryablehttp"
 
 	"golang.org/x/net/proxy"
 )
@@ -33,25 +34,46 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 	return nil
 }
 
-func InitHttpClient() {
-	transport := &http.Transport{
-		MaxIdleConns:        common.RelayMaxIdleConns,
-		MaxIdleConnsPerHost: common.RelayMaxIdleConnsPerHost,
-		ForceAttemptHTTP2:   true,
+// createBaseTransport creates a configured http.Transport with proper timeouts
+func createBaseTransport() *http.Transport {
+	return &http.Transport{
+		MaxIdleConns:          common.RelayMaxIdleConns,
+		MaxIdleConnsPerHost:   common.RelayMaxIdleConnsPerHost,
+		ForceAttemptHTTP2:     true,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 0, // No timeout for headers (streaming needs this)
+		ExpectContinueTimeout: 1 * time.Second,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+	}
+}
+
+// createRetryClient creates a retryablehttp client with proper configuration
+func createRetryClient(transport *http.Transport) *http.Client {
+	retryClient := retryablehttp.NewClient()
+	retryClient.HTTPClient = &http.Client{
+		Transport:     transport,
+		CheckRedirect: checkRedirect,
+	}
+	retryClient.RetryMax = 1                      // One retry for stale connections
+	retryClient.RetryWaitMin = 100 * time.Millisecond
+	retryClient.RetryWaitMax = 500 * time.Millisecond
+	retryClient.Logger = nil                      // Disable logging
+	retryClient.CheckRetry = retryablehttp.DefaultRetryPolicy
+
+	if common.RelayTimeout > 0 {
+		retryClient.HTTPClient.Timeout = time.Duration(common.RelayTimeout) * time.Second
 	}
 
-	if common.RelayTimeout == 0 {
-		httpClient = &http.Client{
-			Transport:     transport,
-			CheckRedirect: checkRedirect,
-		}
-	} else {
-		httpClient = &http.Client{
-			Transport:     transport,
-			Timeout:       time.Duration(common.RelayTimeout) * time.Second,
-			CheckRedirect: checkRedirect,
-		}
-	}
+	return retryClient.StandardClient()
+}
+
+func InitHttpClient() {
+	transport := createBaseTransport()
+	httpClient = createRetryClient(transport)
 }
 
 func GetHttpClient() *http.Client {
@@ -70,11 +92,6 @@ func GetHttpClientWithProxy(proxyURL string) (*http.Client, error) {
 func ResetProxyClientCache() {
 	proxyClientLock.Lock()
 	defer proxyClientLock.Unlock()
-	for _, client := range proxyClients {
-		if transport, ok := client.Transport.(*http.Transport); ok && transport != nil {
-			transport.CloseIdleConnections()
-		}
-	}
 	proxyClients = make(map[string]*http.Client)
 }
 
@@ -98,16 +115,9 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 
 	switch parsedURL.Scheme {
 	case "http", "https":
-		client := &http.Client{
-			Transport: &http.Transport{
-				MaxIdleConns:        common.RelayMaxIdleConns,
-				MaxIdleConnsPerHost: common.RelayMaxIdleConnsPerHost,
-				ForceAttemptHTTP2:   true,
-				Proxy:               http.ProxyURL(parsedURL),
-			},
-			CheckRedirect: checkRedirect,
-		}
-		client.Timeout = time.Duration(common.RelayTimeout) * time.Second
+		transport := createBaseTransport()
+		transport.Proxy = http.ProxyURL(parsedURL)
+		client := createRetryClient(transport)
 		proxyClientLock.Lock()
 		proxyClients[proxyURL] = client
 		proxyClientLock.Unlock()
@@ -127,24 +137,26 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 		}
 
 		// 创建 SOCKS5 代理拨号器
-		// proxy.SOCKS5 使用 tcp 参数，所有 TCP 连接包括 DNS 查询都将通过代理进行。行为与 socks5h 相同
 		dialer, err := proxy.SOCKS5("tcp", parsedURL.Host, auth, proxy.Direct)
 		if err != nil {
 			return nil, err
 		}
 
-		client := &http.Client{
-			Transport: &http.Transport{
-				MaxIdleConns:        common.RelayMaxIdleConns,
-				MaxIdleConnsPerHost: common.RelayMaxIdleConnsPerHost,
-				ForceAttemptHTTP2:   true,
-				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					return dialer.Dial(network, addr)
-				},
-			},
-			CheckRedirect: checkRedirect,
+		transport := createBaseTransport()
+		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			conn, err := dialer.Dial(network, addr)
+			if err != nil {
+				return nil, err
+			}
+			// Set TCP keep-alive on the connection
+			if tcpConn, ok := conn.(*net.TCPConn); ok {
+				tcpConn.SetKeepAlive(true)
+				tcpConn.SetKeepAlivePeriod(30 * time.Second)
+			}
+			return conn, nil
 		}
-		client.Timeout = time.Duration(common.RelayTimeout) * time.Second
+
+		client := createRetryClient(transport)
 		proxyClientLock.Lock()
 		proxyClients[proxyURL] = client
 		proxyClientLock.Unlock()
