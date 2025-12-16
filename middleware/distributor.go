@@ -35,6 +35,9 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, "Invalid request, "+err.Error())
 			return
 		}
+		if version := detectAPIVersionFromPath(c.Request.URL.Path); version != "" {
+			common.SetContextKey(c, constant.ContextKeyRequestAPIVersion, version)
+		}
 		if ok {
 			id, err := strconv.Atoi(channelId.(string))
 			if err != nil {
@@ -227,7 +230,7 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		if _, ok := c.Get("relay_mode"); !ok {
 			c.Set("relay_mode", relayMode)
 		}
-	} else if strings.HasPrefix(c.Request.URL.Path, "/v1beta/models/") || strings.HasPrefix(c.Request.URL.Path, "/v1/models/") {
+	} else if isGeminiCompatiblePath(c.Request.URL.Path) {
 		// Gemini API 路径处理: /v1beta/models/gemini-2.0-flash:generateContent
 		relayMode := relayconstant.RelayModeGemini
 		modelName := extractModelNameFromGeminiPath(c.Request.URL.Path)
@@ -388,4 +391,35 @@ func extractModelNameFromGeminiPath(path string) string {
 
 	// 返回模型名部分
 	return path[startIndex : startIndex+colonIndex]
+}
+
+func isGeminiCompatiblePath(path string) bool {
+	return strings.HasPrefix(path, "/v1beta/models/") ||
+		strings.HasPrefix(path, "/v1/models/") ||
+		strings.HasPrefix(path, "/v1beta/publishers/") ||
+		strings.HasPrefix(path, "/v1beta/projects/") ||
+		strings.HasPrefix(path, "/v1beta1/models/") ||
+		strings.HasPrefix(path, "/v1beta1/publishers/") ||
+		strings.HasPrefix(path, "/v1beta1/projects/") ||
+		strings.HasPrefix(path, "/v1/publishers/") ||
+		strings.HasPrefix(path, "/v1/projects/")
+}
+
+func detectAPIVersionFromPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	trimmed := strings.TrimPrefix(path, "/")
+	if trimmed == "" {
+		return ""
+	}
+	parts := strings.Split(trimmed, "/")
+	if len(parts) == 0 {
+		return ""
+	}
+	segment := parts[0]
+	if strings.HasPrefix(segment, "v") {
+		return segment
+	}
+	return ""
 }

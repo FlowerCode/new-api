@@ -1,6 +1,7 @@
 package vertex
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,6 +49,46 @@ const anthropicVersion = "vertex-2023-10-16"
 type Adaptor struct {
 	RequestMode        int
 	AccountCredentials Credentials
+}
+
+// SanitizeClaudePassthroughBody prepares a raw Claude request body for Vertex AI.
+// It ensures anthropic_version is set and removes the model field which Vertex doesn't accept.
+func (a *Adaptor) SanitizeClaudePassthroughBody(body []byte) ([]byte, error) {
+	if a.RequestMode != RequestModeClaude {
+		return body, nil
+	}
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return body, nil
+	}
+	payload := map[string]any{}
+	if err := common.Unmarshal(trimmed, &payload); err != nil {
+		return body, nil // Return original if can't parse
+	}
+	updated := false
+	if _, ok := payload["anthropic_version"]; !ok {
+		payload["anthropic_version"] = anthropicVersion
+		updated = true
+	}
+	if _, ok := payload["model"]; ok {
+		delete(payload, "model")
+		updated = true
+	}
+	if !updated {
+		return body, nil
+	}
+	return common.Marshal(payload)
+}
+
+func resolveVertexAPIVersion(info *relaycommon.RelayInfo, requestMode int) string {
+	version := info.RequestAPIVersion
+	if version == "v1beta1" {
+		return version
+	}
+	if requestMode == RequestModeLlama {
+		return "v1beta1"
+	}
+	return "v1"
 }
 
 func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeminiChatRequest) (any, error) {
@@ -122,6 +163,7 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 
 func (a *Adaptor) getRequestUrl(info *relaycommon.RelayInfo, modelName, suffix string) (string, error) {
 	region := GetModelRegion(info.ApiVersion, info.OriginModelName)
+	apiVersion := resolveVertexAPIVersion(info, a.RequestMode)
 	if info.ChannelOtherSettings.VertexKeyType != dto.VertexKeyTypeAPIKey {
 		adc := &Credentials{}
 		if err := common.Unmarshal([]byte(info.ApiKey), adc); err != nil {
@@ -132,15 +174,17 @@ func (a *Adaptor) getRequestUrl(info *relaycommon.RelayInfo, modelName, suffix s
 		if a.RequestMode == RequestModeGemini {
 			if region == "global" {
 				return fmt.Sprintf(
-					"https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:%s",
+					"https://aiplatform.googleapis.com/%s/projects/%s/locations/global/publishers/google/models/%s:%s",
+					apiVersion,
 					adc.ProjectID,
 					modelName,
 					suffix,
 				), nil
 			} else {
 				return fmt.Sprintf(
-					"https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:%s",
+					"https://%s-aiplatform.googleapis.com/%s/projects/%s/locations/%s/publishers/google/models/%s:%s",
 					region,
+					apiVersion,
 					adc.ProjectID,
 					region,
 					modelName,
@@ -150,15 +194,17 @@ func (a *Adaptor) getRequestUrl(info *relaycommon.RelayInfo, modelName, suffix s
 		} else if a.RequestMode == RequestModeClaude {
 			if region == "global" {
 				return fmt.Sprintf(
-					"https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/anthropic/models/%s:%s",
+					"https://aiplatform.googleapis.com/%s/projects/%s/locations/global/publishers/anthropic/models/%s:%s",
+					apiVersion,
 					adc.ProjectID,
 					modelName,
 					suffix,
 				), nil
 			} else {
 				return fmt.Sprintf(
-					"https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:%s",
+					"https://%s-aiplatform.googleapis.com/%s/projects/%s/locations/%s/publishers/anthropic/models/%s:%s",
 					region,
+					apiVersion,
 					adc.ProjectID,
 					region,
 					modelName,
@@ -167,8 +213,9 @@ func (a *Adaptor) getRequestUrl(info *relaycommon.RelayInfo, modelName, suffix s
 			}
 		} else if a.RequestMode == RequestModeLlama {
 			return fmt.Sprintf(
-				"https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions",
+				"https://%s-aiplatform.googleapis.com/%s/projects/%s/locations/%s/endpoints/openapi/chat/completions",
 				region,
+				apiVersion,
 				adc.ProjectID,
 				region,
 			), nil
@@ -182,7 +229,8 @@ func (a *Adaptor) getRequestUrl(info *relaycommon.RelayInfo, modelName, suffix s
 		}
 		if region == "global" {
 			return fmt.Sprintf(
-				"https://aiplatform.googleapis.com/v1/publishers/google/models/%s:%s%skey=%s",
+				"https://aiplatform.googleapis.com/%s/publishers/google/models/%s:%s%skey=%s",
+				apiVersion,
 				modelName,
 				suffix,
 				keyPrefix,
@@ -190,8 +238,9 @@ func (a *Adaptor) getRequestUrl(info *relaycommon.RelayInfo, modelName, suffix s
 			), nil
 		} else {
 			return fmt.Sprintf(
-				"https://%s-aiplatform.googleapis.com/v1/publishers/google/models/%s:%s%skey=%s",
+				"https://%s-aiplatform.googleapis.com/%s/publishers/google/models/%s:%s%skey=%s",
 				region,
+				apiVersion,
 				modelName,
 				suffix,
 				keyPrefix,
@@ -360,6 +409,18 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
+	// Sanitize passthrough body for Claude requests on Vertex
+	if a.RequestMode == RequestModeClaude {
+		body, err := io.ReadAll(requestBody)
+		if err != nil {
+			return nil, fmt.Errorf("read request body failed: %w", err)
+		}
+		body, err = a.SanitizeClaudePassthroughBody(body)
+		if err != nil {
+			return nil, fmt.Errorf("sanitize request body failed: %w", err)
+		}
+		requestBody = bytes.NewReader(body)
+	}
 	return channel.DoApiRequest(a, c, info, requestBody)
 }
 

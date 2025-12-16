@@ -165,7 +165,7 @@ func testChannel(channel *model.Channel, testModel string, endpointType string) 
 		if c.Request.URL.Path == "/v1/messages" {
 			relayFormat = types.RelayFormatClaude
 		}
-		if strings.Contains(c.Request.URL.Path, "/v1beta/models") {
+		if isGeminiTestPath(c.Request.URL.Path) {
 			relayFormat = types.RelayFormatGemini
 		}
 		if c.Request.URL.Path == "/v1/rerank" || c.Request.URL.Path == "/rerank" {
@@ -640,4 +640,15 @@ func AutomaticallyTestChannels() {
 			}
 		}
 	})
+}
+
+func isGeminiTestPath(path string) bool {
+	return strings.Contains(path, "/v1beta/models") ||
+		strings.Contains(path, "/v1beta/publishers") ||
+		strings.Contains(path, "/v1beta/projects") ||
+		strings.Contains(path, "/v1beta1/models") ||
+		strings.Contains(path, "/v1beta1/publishers") ||
+		strings.Contains(path, "/v1beta1/projects") ||
+		strings.Contains(path, "/v1/publishers") ||
+		strings.Contains(path, "/v1/projects")
 }

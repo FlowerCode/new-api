@@ -202,10 +202,8 @@ func TokenAuth() func(c *gin.Context) {
 				c.Request.Header.Set("Authorization", "Bearer "+anthropicKey)
 			}
 		}
-		// gemini api 从query中获取key
-		if strings.HasPrefix(c.Request.URL.Path, "/v1beta/models") ||
-			strings.HasPrefix(c.Request.URL.Path, "/v1beta/openai/models") ||
-			strings.HasPrefix(c.Request.URL.Path, "/v1/models/") {
+		// gemini / vertex api path (v1beta or v1)
+		if isGeminiLikePath(c.Request.URL.Path) {
 			skKey := c.Query("key")
 			if skKey != "" {
 				c.Request.Header.Set("Authorization", "Bearer "+skKey)
@@ -327,4 +325,17 @@ func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) e
 		}
 	}
 	return nil
+}
+
+func isGeminiLikePath(path string) bool {
+	return strings.HasPrefix(path, "/v1beta/models") ||
+		strings.HasPrefix(path, "/v1beta/openai/models") ||
+		strings.HasPrefix(path, "/v1beta/publishers") ||
+		strings.HasPrefix(path, "/v1beta/projects") ||
+		strings.HasPrefix(path, "/v1beta1/models") ||
+		strings.HasPrefix(path, "/v1beta1/publishers") ||
+		strings.HasPrefix(path, "/v1beta1/projects") ||
+		strings.HasPrefix(path, "/v1/models/") ||
+		strings.HasPrefix(path, "/v1/publishers") ||
+		strings.HasPrefix(path, "/v1/projects")
 }

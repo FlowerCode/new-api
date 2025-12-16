@@ -98,6 +98,7 @@ type RelayInfo struct {
 	RelayMode              int
 	OriginModelName        string
 	RequestURLPath         string
+	RequestAPIVersion      string
 	ShouldIncludeUsage     bool
 	DisablePing            bool // 是否禁止向下游发送自定义 Ping
 	ClientWs               *websocket.Conn
@@ -411,9 +412,10 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		TokenGroup:     tokenGroup,
 
 		isFirstResponse: true,
-		RelayMode:       relayconstant.Path2RelayMode(c.Request.URL.Path),
-		RequestURLPath:  c.Request.URL.String(),
-		IsStream:        isStream,
+		RelayMode:         relayconstant.Path2RelayMode(c.Request.URL.Path),
+		RequestURLPath:    c.Request.URL.String(),
+		RequestAPIVersion: common.GetContextKeyString(c, constant.ContextKeyRequestAPIVersion),
+		IsStream:          isStream,
 
 		StartTime:         startTime,
 		FirstResponseTime: startTime.Add(-time.Second),

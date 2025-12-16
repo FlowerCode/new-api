@@ -76,6 +76,13 @@ func SetRelayRouter(router *gin.Engine) {
 		httpRouter := relayV1Router.Group("")
 		httpRouter.Use(middleware.Distribute())
 
+		httpRouter.POST("/publishers/*path", func(c *gin.Context) {
+			controller.Relay(c, types.RelayFormatGemini)
+		})
+		httpRouter.POST("/projects/*path", func(c *gin.Context) {
+			controller.Relay(c, types.RelayFormatGemini)
+		})
+
 		// claude related routes
 		httpRouter.POST("/messages", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatClaude)
@@ -169,16 +176,8 @@ func SetRelayRouter(router *gin.Engine) {
 		relaySunoRouter.GET("/fetch/:id", controller.RelayTask)
 	}
 
-	relayGeminiRouter := router.Group("/v1beta")
-	relayGeminiRouter.Use(middleware.TokenAuth())
-	relayGeminiRouter.Use(middleware.ModelRequestRateLimit())
-	relayGeminiRouter.Use(middleware.Distribute())
-	{
-		// Gemini API 路径格式: /v1beta/models/{model_name}:{action}
-		relayGeminiRouter.POST("/models/*path", func(c *gin.Context) {
-			controller.Relay(c, types.RelayFormatGemini)
-		})
-	}
+	registerGeminiRouter(router.Group("/v1beta"))
+	registerGeminiRouter(router.Group("/v1beta1"))
 }
 
 func registerMjRouterGroup(relayMjRouter *gin.RouterGroup) {
@@ -201,5 +200,22 @@ func registerMjRouterGroup(relayMjRouter *gin.RouterGroup) {
 		relayMjRouter.POST("/task/list-by-condition", controller.RelayMidjourney)
 		relayMjRouter.POST("/insight-face/swap", controller.RelayMidjourney)
 		relayMjRouter.POST("/submit/upload-discord-images", controller.RelayMidjourney)
+	}
+}
+
+func registerGeminiRouter(group *gin.RouterGroup) {
+	group.Use(middleware.TokenAuth())
+	group.Use(middleware.ModelRequestRateLimit())
+	group.Use(middleware.Distribute())
+	{
+		group.POST("/models/*path", func(c *gin.Context) {
+			controller.Relay(c, types.RelayFormatGemini)
+		})
+		group.POST("/publishers/*path", func(c *gin.Context) {
+			controller.Relay(c, types.RelayFormatGemini)
+		})
+		group.POST("/projects/*path", func(c *gin.Context) {
+			controller.Relay(c, types.RelayFormatGemini)
+		})
 	}
 }
