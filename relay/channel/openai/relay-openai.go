@@ -133,14 +133,18 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		!info.ChannelSetting.ThinkingToContent &&
 		info.RelayFormat == types.RelayFormatOpenAI)
 
+	// In passthrough mode, skip buffering chunks for token counting since we trust upstream usage
+	skipBuffering := passThrough
+
 	helper.StreamScannerHandler(c, resp, info, func(data string) bool {
 		if len(data) == 0 {
 			return true
 		}
 
 		if immediateStream {
-			// Send immediately, but filter usage-only chunks when not requested
-			if !info.ShouldIncludeUsage && isUsageOnlyChunk(data) {
+			// In passthrough mode, send all chunks immediately without parsing
+			// Only filter usage-only chunks when not in passthrough and usage not requested
+			if !passThrough && !info.ShouldIncludeUsage && isUsageOnlyChunk(data) {
 				// Don't send usage-only chunk, but still process it for metadata extraction
 				lastStreamData = data
 				streamItems = append(streamItems, data)
@@ -162,7 +166,10 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 
 		lastStreamData = data
-		streamItems = append(streamItems, data)
+		// Skip buffering in passthrough mode - we trust upstream usage data
+		if !skipBuffering {
+			streamItems = append(streamItems, data)
+		}
 		return true
 	})
 
@@ -198,8 +205,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 	}
 
-	// 处理token计算 - only if upstream didn't provide usage
-	if !containStreamUsage {
+	// 处理token计算 - only if upstream didn't provide usage and not in passthrough mode
+	// In passthrough mode, we trust upstream usage or skip billing entirely
+	if !containStreamUsage && !passThrough {
 		if err := processTokens(info.RelayMode, streamItems, &responseTextBuilder, &toolCount); err != nil {
 			logger.LogError(c, "error processing tokens: "+err.Error())
 		}
