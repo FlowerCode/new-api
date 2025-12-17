@@ -2,13 +2,13 @@ package helper
 
 import (
 	"bufio"
+	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -16,15 +16,25 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
-	"github.com/bytedance/gopkg/util/gopool"
-
 	"github.com/gin-gonic/gin"
 )
 
 const (
-	InitialScannerBufferSize    = 64 << 10 // 64KB (64*1024)
-	DefaultMaxScannerBufferSize = 64 << 20 // 64MB (64*1024*1024) default SSE buffer size
+	InitialScannerBufferSize    = 64 << 10        // 64KB
+	DefaultMaxScannerBufferSize = 64 << 20        // 64MB default SSE buffer size
 	DefaultPingInterval         = 10 * time.Second
+	MaxPingDuration             = 30 * time.Minute // Safety limit for streaming session
+)
+
+// bufPool reuses bytes.Buffer to reduce allocations under high concurrency.
+var bufPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
+
+// Precomputed byte slices for SSE parsing - avoids allocation per line.
+var (
+	doneBytes  = []byte("[DONE]")
+	dataPrefix = []byte("data:")
 )
 
 func getScannerBufferSize() int {
@@ -34,30 +44,66 @@ func getScannerBufferSize() int {
 	return DefaultMaxScannerBufferSize
 }
 
-func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string) bool) {
+// unsafeString converts []byte to string without allocation.
+// SAFETY: The returned string is only valid while the byte slice is not modified.
+// This is safe here because dataHandler processes the string immediately.
+func unsafeString(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	return unsafe.String(unsafe.SliceData(b), len(b))
+}
 
+// trimLine removes trailing \r\n and leading/trailing whitespace efficiently.
+// Returns the trimmed slice (no allocation).
+func trimLine(line []byte) []byte {
+	// Trim trailing \r\n
+	for len(line) > 0 && (line[len(line)-1] == '\n' || line[len(line)-1] == '\r') {
+		line = line[:len(line)-1]
+	}
+	// Trim leading whitespace
+	for len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
+		line = line[1:]
+	}
+	// Trim trailing whitespace
+	for len(line) > 0 && (line[len(line)-1] == ' ' || line[len(line)-1] == '\t') {
+		line = line[:len(line)-1]
+	}
+	return line
+}
+
+// stripDataPrefix removes "data:" or "data: " prefix if present.
+// Returns the data portion (no allocation).
+func stripDataPrefix(line []byte) []byte {
+	if !bytes.HasPrefix(line, dataPrefix) {
+		return line
+	}
+	line = line[len(dataPrefix):]
+	// Strip optional space after "data:"
+	if len(line) > 0 && line[0] == ' ' {
+		line = line[1:]
+	}
+	return line
+}
+
+// StreamScannerHandler is a lean, single-loop SSE reader/writer. It:
+// - Detects [DONE] before slicing so bare markers don't hang the stream.
+// - Handles "data:" with or without a space.
+// - Uses one goroutine to scan lines and a select loop to write, avoiding per-line goroutines/mutexes.
+// - Resets timeout on pings to avoid silent-upstream disconnects.
+// - Uses []byte internally and unsafe string conversion to minimize allocations.
+func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string) bool) {
 	if resp == nil || dataHandler == nil {
 		return
 	}
 
-	// 确保响应体总是被关闭
 	defer func() {
 		if resp.Body != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 	}()
 
 	streamingTimeout := time.Duration(constant.StreamingTimeout) * time.Second
-
-	var (
-		stopChan   = make(chan bool, 3) // 增加缓冲区避免阻塞
-		scanner    = bufio.NewScanner(resp.Body)
-		ticker     = time.NewTicker(streamingTimeout)
-		pingTicker *time.Ticker
-		writeMutex sync.Mutex     // Mutex to protect concurrent writes
-		wg         sync.WaitGroup // 用于等待所有 goroutine 退出
-	)
-
 	generalSettings := operation_setting.GetGeneralSetting()
 	pingEnabled := generalSettings.PingIntervalEnabled && !info.DisablePing
 	pingInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second
@@ -65,12 +111,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		pingInterval = DefaultPingInterval
 	}
 
-	if pingEnabled {
-		pingTicker = time.NewTicker(pingInterval)
-	}
-
 	if common.DebugEnabled {
-		// print timeout and ping interval for debugging
 		println("relay timeout seconds:", common.RelayTimeout)
 		println("relay max idle conns:", common.RelayMaxIdleConns)
 		println("relay max idle conns per host:", common.RelayMaxIdleConnsPerHost)
@@ -78,196 +119,198 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		println("ping interval seconds:", int64(pingInterval.Seconds()))
 	}
 
-	// 改进资源清理，确保所有 goroutine 正确退出
-	defer func() {
-		// 通知所有 goroutine 停止
-		common.SafeSendBool(stopChan, true)
-
-		ticker.Stop()
-		if pingTicker != nil {
-			pingTicker.Stop()
-		}
-
-		// 等待所有 goroutine 退出，最多等待5秒
-		done := make(chan struct{})
-		go func() {
-			wg.Wait()
-			close(done)
-		}()
-
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			logger.LogError(c, "timeout waiting for goroutines to exit")
-		}
-
-		close(stopChan)
-	}()
-
-	scanner.Buffer(make([]byte, InitialScannerBufferSize), getScannerBufferSize())
-	scanner.Split(bufio.ScanLines)
 	SetEventStreamHeaders(c)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ctx = context.WithValue(ctx, "stop_chan", stopChan)
+	// Line channel carries raw bytes to avoid string allocation per line.
+	lineCh := make(chan []byte, 32)
+	errCh := make(chan error, 1)
 
-	// Handle ping data sending with improved error handling
-	if pingEnabled && pingTicker != nil {
-		wg.Add(1)
-		gopool.Go(func() {
-			defer func() {
-				wg.Done()
-				if r := recover(); r != nil {
-					logger.LogError(c, fmt.Sprintf("ping goroutine panic: %v", r))
-					common.SafeSendBool(stopChan, true)
-				}
-				if common.DebugEnabled {
-					println("ping goroutine exited")
-				}
-			}()
+	// Reader goroutine: uses ReadSlice + pooled buffer for oversized lines.
+	go func() {
+		defer close(lineCh)
 
-			// 添加超时保护，防止 goroutine 无限运行
-			maxPingDuration := 30 * time.Minute // 最大 ping 持续时间
-			pingTimeout := time.NewTimer(maxPingDuration)
-			defer pingTimeout.Stop()
-
-			for {
-				select {
-				case <-pingTicker.C:
-					// 使用超时机制防止写操作阻塞
-					done := make(chan error, 1)
-					go func() {
-						writeMutex.Lock()
-						defer writeMutex.Unlock()
-						done <- PingData(c)
-					}()
-
-					select {
-					case err := <-done:
-						if err != nil {
-							logger.LogError(c, "ping data error: "+err.Error())
-							return
-						}
-						if common.DebugEnabled {
-							println("ping data sent")
-						}
-					case <-time.After(10 * time.Second):
-						logger.LogError(c, "ping data send timeout")
-						return
-					case <-ctx.Done():
-						return
-					case <-stopChan:
-						return
-					}
-				case <-ctx.Done():
-					return
-				case <-stopChan:
-					return
-				case <-c.Request.Context().Done():
-					// 监听客户端断开连接
-					return
-				case <-pingTimeout.C:
-					logger.LogError(c, "ping goroutine max duration reached")
-					return
-				}
-			}
-		})
-	}
-
-	// Scanner goroutine with improved error handling
-	wg.Add(1)
-	common.RelayCtxGo(ctx, func() {
+		reader := bufio.NewReaderSize(resp.Body, InitialScannerBufferSize)
+		buf := bufPool.Get().(*bytes.Buffer)
 		defer func() {
-			wg.Done()
-			if r := recover(); r != nil {
-				logger.LogError(c, fmt.Sprintf("scanner goroutine panic: %v", r))
-			}
-			common.SafeSendBool(stopChan, true)
-			if common.DebugEnabled {
-				println("scanner goroutine exited")
-			}
+			buf.Reset()
+			bufPool.Put(buf)
 		}()
 
-		for scanner.Scan() {
-			// 检查是否需要停止
-			select {
-			case <-stopChan:
-				return
-			case <-ctx.Done():
-				return
-			case <-c.Request.Context().Done():
-				return
-			default:
-			}
+		for {
+			chunk, err := reader.ReadSlice('\n')
 
-			ticker.Reset(streamingTimeout)
-			data := scanner.Text()
-			if common.DebugEnabled {
-				println(data)
-			}
-
-			if len(data) < 6 {
-				continue
-			}
-			if data[:5] != "data:" && data[:6] != "[DONE]" {
-				continue
-			}
-			data = data[5:]
-			data = strings.TrimLeft(data, " ")
-			data = strings.TrimSuffix(data, "\r")
-			if !strings.HasPrefix(data, "[DONE]") {
-				info.SetFirstResponseTime()
-
-				// 使用超时机制防止写操作阻塞
-				done := make(chan bool, 1)
-				go func() {
-					writeMutex.Lock()
-					defer writeMutex.Unlock()
-					done <- dataHandler(data)
-				}()
-
-				select {
-				case success := <-done:
-					if !success {
-						return
-					}
-				case <-time.After(10 * time.Second):
-					logger.LogError(c, "data handler timeout")
-					return
-				case <-ctx.Done():
-					return
-				case <-stopChan:
+			if err == bufio.ErrBufferFull {
+				// Accumulate oversized line; continue reading until newline.
+				buf.Write(chunk)
+				// Guard against unbounded memory growth
+				if buf.Len() > getScannerBufferSize() {
+					errCh <- io.ErrShortBuffer
 					return
 				}
-			} else {
-				// done, 处理完成标志，直接退出停止读取剩余数据防止出错
+				continue
+			}
+
+			if len(chunk) > 0 {
+				var line []byte
+				if buf.Len() > 0 {
+					buf.Write(chunk)
+					// Clone to avoid referencing reader's internal buffer
+					line = bytes.Clone(buf.Bytes())
+					buf.Reset()
+				} else {
+					// Clone since ReadSlice returns a slice of internal buffer
+					line = bytes.Clone(chunk)
+				}
+
+				select {
+				case <-ctx.Done():
+					return
+				case <-c.Request.Context().Done():
+					return
+				case lineCh <- line:
+				}
+			}
+
+			if err != nil {
+				if err != io.EOF {
+					errCh <- err
+				}
+				return
+			}
+		}
+	}()
+
+	// Setup ping ticker - use nil channel pattern to disable in select
+	var pingTicker *time.Ticker
+	var pingCh <-chan time.Time
+	if pingEnabled {
+		pingTicker = time.NewTicker(pingInterval)
+		defer pingTicker.Stop()
+		pingCh = pingTicker.C
+	}
+
+	// Setup timeout timer - use nil channel pattern to disable in select
+	var timeoutTimer *time.Timer
+	var timeoutCh <-chan time.Time
+	if streamingTimeout > 0 {
+		timeoutTimer = time.NewTimer(streamingTimeout)
+		defer timeoutTimer.Stop()
+		timeoutCh = timeoutTimer.C
+	}
+
+	// Safety limit: max duration for the entire streaming session
+	maxDurationTimer := time.NewTimer(MaxPingDuration)
+	defer maxDurationTimer.Stop()
+
+	resetTimeout := func() {
+		if timeoutTimer == nil {
+			return
+		}
+		if !timeoutTimer.Stop() {
+			select {
+			case <-timeoutTimer.C:
+			default:
+			}
+		}
+		timeoutTimer.Reset(streamingTimeout)
+	}
+
+	seenFirst := false
+
+	for {
+		select {
+		case line, ok := <-lineCh:
+			if !ok {
+				logger.LogInfo(c, "streaming finished")
+				return
+			}
+
+			resetTimeout()
+
+			if len(line) == 0 {
+				continue
+			}
+
+			if common.DebugEnabled {
+				println(unsafeString(line))
+			}
+
+			// Trim line efficiently (no allocation)
+			trimmed := trimLine(line)
+
+			if len(trimmed) == 0 {
+				continue
+			}
+
+			// Accept bare [DONE]
+			if bytes.Equal(trimmed, doneBytes) {
 				if common.DebugEnabled {
 					println("received [DONE], stopping scanner")
 				}
 				return
 			}
-		}
 
-		if err := scanner.Err(); err != nil {
-			if err != io.EOF {
+			// Strip "data:" prefix if present (no allocation)
+			data := stripDataPrefix(trimmed)
+
+			if len(data) == 0 {
+				continue
+			}
+
+			// Check for [DONE] after stripping data: prefix
+			if bytes.Equal(data, doneBytes) {
+				if common.DebugEnabled {
+					println("received [DONE], stopping scanner")
+				}
+				return
+			}
+
+			if !seenFirst {
+				seenFirst = true
+				info.SetFirstResponseTime()
+			}
+
+			// Use unsafe string conversion to avoid allocation.
+			// Safe because dataHandler processes immediately and doesn't store the string.
+			if !dataHandler(unsafeString(data)) {
+				return
+			}
+
+		case err := <-errCh:
+			if err != nil {
 				logger.LogError(c, "scanner error: "+err.Error())
 			}
-		}
-	})
+			return
 
-	// 主循环等待完成或超时
-	select {
-	case <-ticker.C:
-		// 超时处理逻辑 - notify client immediately
-		logger.LogError(c, "streaming timeout")
-		SendSSEError(c, "streaming_timeout", "no data received within timeout period")
-	case <-stopChan:
-		// 正常结束
-		logger.LogInfo(c, "streaming finished")
-	case <-c.Request.Context().Done():
-		// 客户端断开连接
-		logger.LogInfo(c, "client disconnected")
+		case <-c.Request.Context().Done():
+			logger.LogInfo(c, "client disconnected")
+			return
+
+		case <-ctx.Done():
+			return
+
+		case <-pingCh:
+			if err := PingData(c); err != nil {
+				logger.LogError(c, "ping data error: "+err.Error())
+				return
+			}
+			if common.DebugEnabled {
+				println("ping data sent")
+			}
+			// Treat ping as activity to avoid timeout on silent upstreams.
+			resetTimeout()
+
+		case <-timeoutCh:
+			logger.LogError(c, "streaming timeout")
+			SendSSEError(c, "streaming_timeout", "no data received within timeout period")
+			return
+
+		case <-maxDurationTimer.C:
+			logger.LogError(c, "streaming max duration reached")
+			return
+		}
 	}
 }
