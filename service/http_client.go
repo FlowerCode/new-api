@@ -36,6 +36,10 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 
 // createBaseTransport creates a configured http.Transport with proper timeouts
 func createBaseTransport() *http.Transport {
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
 	return &http.Transport{
 		MaxIdleConns:          common.RelayMaxIdleConns,
 		MaxIdleConnsPerHost:   common.RelayMaxIdleConnsPerHost,
@@ -44,10 +48,20 @@ func createBaseTransport() *http.Transport {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 0, // No timeout for headers (streaming needs this)
 		ExpectContinueTimeout: 1 * time.Second,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			conn, err := dialer.DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			// Enable TCP_NODELAY to disable Nagle's algorithm for lower latency streaming
+			if tcpConn, ok := conn.(*net.TCPConn); ok {
+				_ = tcpConn.SetNoDelay(true)
+			}
+			return conn, nil
+		},
+		// Increase write buffer for better throughput on large responses
+		WriteBufferSize: 64 * 1024, // 64KB
+		ReadBufferSize:  64 * 1024, // 64KB
 	}
 }
 
