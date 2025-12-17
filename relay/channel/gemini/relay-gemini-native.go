@@ -94,7 +94,13 @@ func GeminiTextGenerationStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 	helper.SetEventStreamHeaders(c)
 
 	return geminiStreamHandler(c, info, resp, func(data string, geminiResponse *dto.GeminiChatResponse) bool {
-		err := helper.StringData(c, data)
+		// Use direct write for passthrough (geminiResponse is nil) to bypass c.Render overhead
+		var err error
+		if geminiResponse == nil {
+			err = helper.StringDataDirect(c, data)
+		} else {
+			err = helper.StringData(c, data)
+		}
 		if err != nil {
 			logger.LogError(c, "failed to write stream data: "+err.Error())
 			return false

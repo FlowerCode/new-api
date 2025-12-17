@@ -89,7 +89,8 @@ func ClaudeChunkData(c *gin.Context, resp dto.ClaudeResponse, data string) {
 	_ = FlushWriter(c)
 }
 
-// ClaudeRawChunkData sends Claude SSE data without parsing JSON - extracts event type with minimal string ops
+// ClaudeRawChunkData sends Claude SSE data without parsing JSON - extracts event type with minimal string ops.
+// Uses direct write to bypass c.Render overhead (mutex, string replacer) for lower latency.
 func ClaudeRawChunkData(c *gin.Context, data string) {
 	// Extract event type from JSON: {"type":"xxx",...} - minimal parsing for passthrough
 	eventType := "message"
@@ -99,9 +100,12 @@ func ClaudeRawChunkData(c *gin.Context, data string) {
 			eventType = data[start : start+end]
 		}
 	}
-	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", eventType)})
-	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("data: %s\n", data)})
-	_ = FlushWriter(c)
+	// Direct write bypasses c.Render's mutex lock and dataReplacer scanning
+	w := c.Writer
+	_, _ = w.Write([]byte("event: " + eventType + "\ndata: " + data + "\n\n"))
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func ResponseChunkData(c *gin.Context, resp dto.ResponsesStreamResponse, data string) {
@@ -121,6 +125,28 @@ func StringData(c *gin.Context, str string) error {
 
 	c.Render(-1, common.CustomEvent{Data: "data: " + str})
 	return FlushWriter(c)
+}
+
+// StringDataDirect writes SSE data using direct write, bypassing c.Render overhead for lower latency.
+// Use this for passthrough mode where the data is already valid SSE format.
+func StringDataDirect(c *gin.Context, str string) error {
+	if c == nil || c.Writer == nil {
+		return errors.New("context or writer is nil")
+	}
+
+	if c.Request != nil && c.Request.Context().Err() != nil {
+		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
+	}
+
+	w := c.Writer
+	_, err := w.Write([]byte("data: " + str + "\n\n"))
+	if err != nil {
+		return err
+	}
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return nil
 }
 
 func PingData(c *gin.Context) error {

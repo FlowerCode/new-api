@@ -150,7 +150,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				streamItems = append(streamItems, data)
 				return true
 			}
-			if err := HandleStreamFormat(c, info, data, false, false); err != nil {
+			// Use direct write for passthrough to bypass c.Render overhead
+			if passThrough && info.RelayFormat == types.RelayFormatOpenAI {
+				if err := helper.StringDataDirect(c, data); err != nil {
+					common.SysLog("error writing stream data: " + err.Error())
+				}
+				info.SendResponseCount++
+			} else if err := HandleStreamFormat(c, info, data, false, false); err != nil {
 				common.SysLog("error handling stream format: " + err.Error())
 			}
 		} else if lastStreamData != "" {
