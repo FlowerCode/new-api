@@ -1077,7 +1077,34 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	var imageCount int
 	responseText := strings.Builder{}
 
+	// Passthrough fast path: skip JSON parsing when forwarding Gemini-to-Gemini unchanged
+	passThrough := (model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled) &&
+		info.RelayFormat == types.RelayFormatGemini
+
 	helper.StreamScannerHandler(c, resp, info, func(data string) bool {
+		// In passthrough mode, only parse chunks with usageMetadata for billing
+		if passThrough {
+			if strings.Contains(data, `"usageMetadata"`) {
+				var geminiResponse dto.GeminiChatResponse
+				if err := common.UnmarshalJsonStr(data, &geminiResponse); err == nil {
+					if geminiResponse.UsageMetadata.TotalTokenCount != 0 {
+						usage.PromptTokens = geminiResponse.UsageMetadata.PromptTokenCount
+						usage.CompletionTokens = geminiResponse.UsageMetadata.CandidatesTokenCount + geminiResponse.UsageMetadata.ThoughtsTokenCount
+						usage.CompletionTokenDetails.ReasoningTokens = geminiResponse.UsageMetadata.ThoughtsTokenCount
+						usage.TotalTokens = geminiResponse.UsageMetadata.TotalTokenCount
+						for _, detail := range geminiResponse.UsageMetadata.PromptTokensDetails {
+							if detail.Modality == "AUDIO" {
+								usage.PromptTokensDetails.AudioTokens = detail.TokenCount
+							} else if detail.Modality == "TEXT" {
+								usage.PromptTokensDetails.TextTokens = detail.TokenCount
+							}
+						}
+					}
+				}
+			}
+			return callback(data, nil)
+		}
+
 		var geminiResponse dto.GeminiChatResponse
 		err := common.UnmarshalJsonStr(data, &geminiResponse)
 		if err != nil {

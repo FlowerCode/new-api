@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
@@ -84,6 +85,21 @@ func ClaudeData(c *gin.Context, resp dto.ClaudeResponse) error {
 
 func ClaudeChunkData(c *gin.Context, resp dto.ClaudeResponse, data string) {
 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
+	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("data: %s\n", data)})
+	_ = FlushWriter(c)
+}
+
+// ClaudeRawChunkData sends Claude SSE data without parsing JSON - extracts event type with minimal string ops
+func ClaudeRawChunkData(c *gin.Context, data string) {
+	// Extract event type from JSON: {"type":"xxx",...} - minimal parsing for passthrough
+	eventType := "message"
+	if idx := strings.Index(data, `"type":"`); idx != -1 {
+		start := idx + 8
+		if end := strings.Index(data[start:], `"`); end != -1 {
+			eventType = data[start : start+end]
+		}
+	}
+	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", eventType)})
 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("data: %s\n", data)})
 	_ = FlushWriter(c)
 }

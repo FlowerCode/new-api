@@ -633,6 +633,21 @@ func FormatClaudeResponseInfo(requestMode int, claudeResponse *dto.ClaudeRespons
 }
 
 func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo, data string, requestMode int) *types.NewAPIError {
+	// Passthrough fast path: skip JSON parsing for content chunks, but parse usage events
+	passThrough := model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled
+	if passThrough && info.RelayFormat == types.RelayFormatClaude {
+		// Only parse message_start (input tokens) and message_delta (output tokens) for billing
+		// Skip parsing content_block_delta (the most frequent event) for performance
+		if strings.Contains(data, `"message_start"`) || strings.Contains(data, `"message_delta"`) {
+			var claudeResponse dto.ClaudeResponse
+			if err := common.UnmarshalJsonStr(data, &claudeResponse); err == nil {
+				FormatClaudeResponseInfo(requestMode, &claudeResponse, nil, claudeInfo)
+			}
+		}
+		helper.ClaudeRawChunkData(c, data)
+		return nil
+	}
+
 	var claudeResponse dto.ClaudeResponse
 	err := common.UnmarshalJsonStr(data, &claudeResponse)
 	if err != nil {
