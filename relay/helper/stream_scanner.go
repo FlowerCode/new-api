@@ -260,8 +260,9 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	// 主循环等待完成或超时
 	select {
 	case <-ticker.C:
-		// 超时处理逻辑
+		// 超时处理逻辑 - notify client immediately
 		logger.LogError(c, "streaming timeout")
+		SendSSEError(c, "streaming_timeout", "no data received within timeout period")
 	case <-stopChan:
 		// 正常结束
 		logger.LogInfo(c, "streaming finished")

@@ -86,6 +86,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	defer func() {
 		if newAPIError != nil {
 			logger.LogError(c, fmt.Sprintf("relay error: %s", newAPIError.Error()))
+			// Skip JSON error response if SSE headers were already sent (streaming started or SSE error sent)
+			if _, sseHeadersSet := c.Get("event_stream_headers_set"); sseHeadersSet {
+				return
+			}
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:

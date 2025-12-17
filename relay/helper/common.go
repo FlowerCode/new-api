@@ -54,6 +54,22 @@ func SetEventStreamHeaders(c *gin.Context) {
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 }
 
+// SendSSEError sends an error event to the client via SSE when streaming headers are already sent.
+// This ensures the client receives immediate notification of errors instead of waiting for timeout.
+func SendSSEError(c *gin.Context, errType string, errMsg string) {
+	errObj := map[string]map[string]string{
+		"error": {"type": errType, "message": errMsg},
+	}
+	errData, err := common.Marshal(errObj)
+	if err != nil {
+		// Fallback to simple error if marshaling fails
+		errData = []byte(`{"error":{"type":"internal_error","message":"error formatting failed"}}`)
+	}
+	c.Render(-1, common.CustomEvent{Data: "data: " + string(errData)})
+	c.Render(-1, common.CustomEvent{Data: ""})
+	_ = FlushWriter(c)
+}
+
 func ClaudeData(c *gin.Context, resp dto.ClaudeResponse) error {
 	jsonData, err := common.Marshal(resp)
 	if err != nil {

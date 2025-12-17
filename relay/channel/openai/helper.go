@@ -194,6 +194,29 @@ func handleLastResponse(lastStreamData string, responseId *string, createAt *int
 	return nil
 }
 
+// isUsageOnlyChunk checks if a stream chunk contains only usage data without content.
+// Returns true if the chunk should be suppressed when ShouldIncludeUsage is false.
+func isUsageOnlyChunk(data string) bool {
+	var resp dto.ChatCompletionsStreamResponse
+	if err := common.Unmarshal(common.StringToByteSlice(data), &resp); err != nil {
+		return false
+	}
+
+	// No usage data means it's not a usage-only chunk
+	if !service.ValidUsage(resp.Usage) {
+		return false
+	}
+
+	// Check if any choice has content
+	for _, choice := range resp.Choices {
+		if choice.Delta.GetContentString() != "" || choice.Delta.GetReasoningContent() != "" {
+			return false
+		}
+	}
+
+	return true
+}
+
 func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStreamData string,
 	responseId string, createAt int64, model string, systemFingerprint string,
 	usage *dto.Usage, containStreamUsage bool) {

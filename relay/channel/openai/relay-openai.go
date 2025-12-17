@@ -14,7 +14,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
-
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/bytedance/gopkg/util/gopool"
@@ -126,22 +126,43 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	// 检查是否为音频模型
 	isAudioModel := strings.Contains(strings.ToLower(model), "audio")
 
+	// Immediate streaming: send chunks without 1-chunk delay when no processing needed
+	// In passthrough mode, always use immediate streaming since we forward raw responses
+	passThrough := model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled
+	immediateStream := passThrough || (!info.ChannelSetting.ForceFormat &&
+		!info.ChannelSetting.ThinkingToContent &&
+		info.RelayFormat == types.RelayFormatOpenAI)
+
 	helper.StreamScannerHandler(c, resp, info, func(data string) bool {
-		if lastStreamData != "" {
-			err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
-			if err != nil {
+		if len(data) == 0 {
+			return true
+		}
+
+		if immediateStream {
+			// Send immediately, but filter usage-only chunks when not requested
+			if !info.ShouldIncludeUsage && isUsageOnlyChunk(data) {
+				// Don't send usage-only chunk, but still process it for metadata extraction
+				lastStreamData = data
+				streamItems = append(streamItems, data)
+				return true
+			}
+			if err := HandleStreamFormat(c, info, data, false, false); err != nil {
+				common.SysLog("error handling stream format: " + err.Error())
+			}
+		} else if lastStreamData != "" {
+			// Delayed pattern for format conversion/processing
+			if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
 				common.SysLog("error handling stream format: " + err.Error())
 			}
 		}
-		if len(data) > 0 {
-			// 对音频模型，保存倒数第二个stream data
-			if isAudioModel && lastStreamData != "" {
-				secondLastStreamData = lastStreamData
-			}
 
-			lastStreamData = data
-			streamItems = append(streamItems, data)
+		// 对音频模型，保存倒数第二个stream data
+		if isAudioModel && lastStreamData != "" {
+			secondLastStreamData = lastStreamData
 		}
+
+		lastStreamData = data
+		streamItems = append(streamItems, data)
 		return true
 	})
 
@@ -170,18 +191,18 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		logger.LogError(c, fmt.Sprintf("error handling last response: %s, lastStreamData: [%s]", err.Error(), lastStreamData))
 	}
 
-	if info.RelayFormat == types.RelayFormatOpenAI {
+	// In immediate mode, last chunk was already sent; in delayed mode, send it now if needed
+	if !immediateStream && info.RelayFormat == types.RelayFormatOpenAI {
 		if shouldSendLastResp {
 			_ = sendStreamData(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
 		}
 	}
 
-	// 处理token计算
-	if err := processTokens(info.RelayMode, streamItems, &responseTextBuilder, &toolCount); err != nil {
-		logger.LogError(c, "error processing tokens: "+err.Error())
-	}
-
+	// 处理token计算 - only if upstream didn't provide usage
 	if !containStreamUsage {
+		if err := processTokens(info.RelayMode, streamItems, &responseTextBuilder, &toolCount); err != nil {
+			logger.LogError(c, "error processing tokens: "+err.Error())
+		}
 		usage = service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 		usage.CompletionTokens += toolCount * 7
 	}
