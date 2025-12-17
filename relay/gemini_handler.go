@@ -73,8 +73,11 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		}
 	}
 
-	if err := helper.ModelMappedHelper(c, info, request); err != nil {
-		return types.NewError(err, types.ErrorCodeChannelModelMappedError, types.ErrOptionWithSkipRetry())
+	// Skip model mapping in passthrough mode - raw request is forwarded unchanged
+	if !passThrough {
+		if err := helper.ModelMappedHelper(c, info, request); err != nil {
+			return types.NewError(err, types.ErrorCodeChannelModelMappedError, types.ErrOptionWithSkipRetry())
+		}
 	}
 
 	if model_setting.GetGeminiSettings().ThinkingAdapterEnabled {
