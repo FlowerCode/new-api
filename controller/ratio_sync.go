@@ -345,16 +345,6 @@ func buildDifferences(localData map[string]any, successfulChannels []struct {
 		}
 	}
 
-	for _, channel := range successfulChannels {
-		for _, ratioType := range ratioTypes {
-			if upstreamRatio, ok := channel.data[ratioType].(map[string]any); ok {
-				for modelName := range upstreamRatio {
-					allModels[modelName] = struct{}{}
-				}
-			}
-		}
-	}
-
 	confidenceMap := make(map[string]map[string]bool)
 
 	// 预处理阶段：检查pricing接口的可信度
