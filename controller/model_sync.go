@@ -260,11 +260,14 @@ func SyncUpstreamModels(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
 		return
 	}
-	if len(missing) == 0 {
+	if len(missing) == 0 && len(req.Overwrite) == 0 {
 		c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
 			"created_models":  0,
 			"created_vendors": 0,
+			"updated_models":  0,
 			"skipped_models":  []string{},
+			"created_list":    []string{},
+			"updated_list":    []string{},
 		}})
 		return
 	}
