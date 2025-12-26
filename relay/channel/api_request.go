@@ -264,7 +264,26 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		client = service.GetHttpClient()
 	}
 
+	// Defer setting SSE headers and starting ping until AFTER upstream request succeeds
+	// This allows us to return proper error status codes if the initial request fails
 	var stopPinger context.CancelFunc
+	defer func() {
+		if stopPinger != nil {
+			stopPinger()
+			if common2.DebugEnabled {
+				println("SSE ping goroutine stopped by defer")
+			}
+		}
+	}()
+
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.LogError(c, "do request failed: "+err.Error())
+		// Headers not sent yet, so error will be returned with proper status code
+		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
+	}
+
+	// Only set streaming headers AFTER we have a successful response
 	if info.IsStream {
 		helper.SetEventStreamHeaders(c)
 		// 处理流式请求的 ping 保活
@@ -272,26 +291,7 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		if generalSettings.PingIntervalEnabled && !info.DisablePing {
 			pingInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second
 			stopPinger = startPingKeepAlive(c, pingInterval)
-			// 使用defer确保在任何情况下都能停止ping goroutine
-			defer func() {
-				if stopPinger != nil {
-					stopPinger()
-					if common2.DebugEnabled {
-						println("SSE ping goroutine stopped by defer")
-					}
-				}
-			}()
 		}
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		logger.LogError(c, "do request failed: "+err.Error())
-		// If streaming headers were already sent, notify client via SSE error event
-		if info.IsStream {
-			helper.SendSSEError(c, "upstream_error", "do request failed")
-		}
-		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
 	}
 	if resp == nil {
 		return nil, errors.New("resp is nil")
